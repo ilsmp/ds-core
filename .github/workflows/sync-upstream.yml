@@ -1,0 +1,22 @@
+name: Sync upstream ds-core
+on:
+  schedule:
+    - cron: '0 3 * * *'   # 每天北京时间 11:00
+  workflow_dispatch: {}
+permissions:
+  contents: write
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+      - uses: aormsby/Fork-Sync-With-Upstream-action@v3.4
+        with:
+          upstream_sync_repo: Blue-Frontier/ds-core
+          upstream_sync_branch: main
+          target_sync_branch: main
+          git_push_args: --force-with-lease
+
