@@ -1,3 +1,9 @@
+<p align="center">
+  <a href="https://keepandroidopen.org">
+    <img src="assets/keep-android-open.svg" alt="Android will become a locked-down platform in 2027">
+  </a>
+</p>
+
 # ds-core
 
 DevSidecar 内核仓库（**三位一体**之 core）：`core` + `mitmproxy`。
