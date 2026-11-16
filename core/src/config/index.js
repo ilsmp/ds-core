@@ -170,7 +170,7 @@ const defaultConfig = {
 // >>> SYNC:OFFICIAL-FALLBACK:BEGIN
 // 「internal 底本」：官方配置的规则类节点，由 _script/sync-official-config.mjs 在构建时自动更新，请勿手改。
 // 来源地址：https://ds-official-config.bestar.de5.net/remote_config.json5
-// 来源版本：202611021413（新增 Grok（grok.com / x.ai）的 ECH 规则；grok.ai 不兼容 ECH，保持普通连接）
+// 来源版本：202611121325（steampowered 规则转义点号（^(store|checkout)\.steampowered\.com$），避免匹配无关主机）
 // 下载失败时脚本不会改动本区块，即保留上一次的同步结果。
 // 用 Object.assign 整体替换（不是深合并），这样官方「删掉」的键也会跟着消失。
 /* eslint-disable no-template-curly-in-string -- 官方配置里存在 ${...} 形式的普通字符串（如代理目标），并非模板串 */
@@ -777,6 +777,7 @@ Object.assign(defaultConfig.server, {
     'gist.github.com': {
       '.*': {
         sni: 'baidu.com',
+        verifyHost: 'github.com',
       },
     },
     '*.gravatar.com': {
@@ -1026,7 +1027,7 @@ Object.assign(defaultConfig.server, {
         desc: 'steam社区数据不能也不需调整sni,直接直连',
       },
     },
-    '^(store|checkout).steampowered.com$': {
+    '^(store|checkout)\\.steampowered\\.com$': {
       '.*': {
         sni: 'baidu.com',
       },
@@ -1395,7 +1396,7 @@ Object.assign(defaultConfig.server, {
       '23.15.140.216': true,
       '104.79.200.218': true,
     },
-    '^(store|checkout).steampowered.com$': {
+    '^(store|checkout)\\.steampowered\\.com$': {
       '23.209.218.108': true,
       '184.31.230.122': true,
       '23.35.102.114': true,
@@ -1604,6 +1605,7 @@ Object.assign(defaultConfig.server, {
       enabled: true,
       use: true,
       publicName: 'cloudflare-ech.com',
+      sharedConfig: 'AEX+DQBBBAAgACD5ePjdqyD/98Ay87SkPKvxDV1OX57c8B6ad9YZLiBDbAAEAAEAAQASY2xvdWRmbGFyZS1lY2guY29tAAA=',
       cacheSize: 512,
       emptyTtl: 600000,
       minTtl: 60000,
@@ -1623,8 +1625,8 @@ Object.assign(defaultConfig.server, {
   },
 })
 Object.assign(defaultConfig.app.metaInfo, {
-  version: 202611021413,
-  updateLog: '新增 Grok（grok.com / x.ai）的 ECH 规则；grok.ai 不兼容 ECH，保持普通连接',
+  version: 202611121325,
+  updateLog: 'steampowered 规则转义点号（^(store|checkout)\\.steampowered\\.com$），避免匹配无关主机',
 })
 /* eslint-enable no-template-curly-in-string */
 // <<< SYNC:OFFICIAL-FALLBACK:END
