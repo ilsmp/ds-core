@@ -50,32 +50,6 @@ const Plugin = function (context) {
       return { ok: true }
     },
 
-    async  overrideRunningConfig_bak (serverConfig) {
-      const conf = config.get().plugin.overwall
-      if (!conf || !conf.enabled || !conf.targets) {
-        return
-      }
-      const server = conf.server
-      let i = 0
-      let main
-      const backup = []
-      for (const key in server) {
-        if (i === 0) {
-          main = key
-        } else {
-          backup.push(key)
-        }
-        i++
-      }
-      for (const key in conf.targets) {
-        serverConfig.intercepts[key] = {
-          '.*': {
-            proxy: `${main}/\${host}`,
-            backup,
-          },
-        }
-      }
-    },
   }
   return api
 }
