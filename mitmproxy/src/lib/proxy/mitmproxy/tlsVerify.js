@@ -1,4 +1,5 @@
 const tls = require('node:tls')
+const net = require('node:net')
 
 /**
  * 决定上游 TLS 的 SNI 与证书校验域名（常规请求与 WebSocket 升级路径共用）。
@@ -20,7 +21,8 @@ function applyTlsVerifyPolicy (rOptions, log) {
   }
 
   const realHost = rOptions.hostname
-  if (rOptions.servername == null) {
+  // IP 目标不能设 SNI（Node 直接抛 ERR_INVALID_ARG_VALUE）；域名目标缺省用真实域名做 SNI
+  if (rOptions.servername == null && !net.isIP(realHost)) {
     rOptions.servername = realHost
   }
   const verifyHost = (rOptions.verifyHost != null && rOptions.verifyHost !== '') ? rOptions.verifyHost : realHost

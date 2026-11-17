@@ -6,12 +6,38 @@ const request = require('request')
 const log = require('../../../utils/util.log.server')
 const matchUtil = require('../../../utils/util.match')
 const pac = require('./source/pac')
+const deathRegistry = require('./overwall-death-registry')
 const ProxyHttpAgent = require('../common/ProxyHttpAgent')
 const { restoreVerifySslAgent } = require('../../interceptor/impl/req/interceptorUtil')
 const dateUtil = require('@blue-frontier/dev-sidecar/src/utils/util.date')
 const { resolvedSnapshot } = require('@blue-frontier/dev-sidecar/src/utils/util.secret-vault')
 
 let pacClient = null
+
+// 视为「转发目标连不上」的错误：只有这类错误才触发死亡标记 + 直连回退；
+// HTTP 4xx/5xx 说明目标活着（拒绝服务≠服务死了），不降级。
+const CONNECT_FAIL_CODES = new Set([
+  'ECONNRESET',
+  'ECONNREFUSED',
+  'ETIMEDOUT',
+  'ETIMEOUT',
+  'EPIPE',
+  'EHOSTUNREACH',
+  'ENETUNREACH',
+  'ENOTFOUND',
+  'EAI_AGAIN',
+  'UND_ERR_CONNECT_TIMEOUT',
+  'ERR_SOCKET_CONNECTION_TIMEOUT',
+])
+function isConnectFailure (e) {
+  if (!e)
+    return false
+  if (e.code && CONNECT_FAIL_CODES.has(e.code))
+    return true
+  if (!e.code && /连接超时|connect\\b.*time|socket.*time/i.test(String(e.message || '')))
+    return true
+  return false
+}
 
 function matchTarget (hostname, overWallTargetMap) {
   // 匹配配置文件
@@ -180,7 +206,7 @@ function createOverwallMiddleware (overWallConfig) {
   if (serverList.length === 0) {
     return null
   }
-  const serverById = new Map(serverList.map((item) => [item.id, item]))
+  const serverById = new Map(serverList.map(item => [item.id, item]))
 
   // 默认优先使用 ID 为 1 的服务器；若 ID 为 1 的服务器不存在，则自动使用 ID 为 0 的默认服务器
   const defaultServerId = serverById.has(1) ? 1 : 0
@@ -206,6 +232,47 @@ function createOverwallMiddleware (overWallConfig) {
     }
     return httpLoopbackAgent
   }
+
+  // 改写后附加到 context.overwall 的结果回写器：
+  // onSuccess → 目标存活，清除死亡标记回到官方转发路径；
+  // onUpstreamError(e) → 连接类失败时标记死亡并恢复直连参数，返回是否已回退。
+  function attachResultHook (context, rOptions, serverId, savedAgent, savedHeaders) {
+    const restoreDirect = () => {
+      const saved = rOptions.original
+      if (!saved)
+        return
+      rOptions.protocol = saved.protocol
+      rOptions.hostname = saved.hostname
+      rOptions.host = saved.host
+      rOptions.path = saved.path
+      if (saved.port != null)
+        rOptions.port = saved.port
+      if (saved.servername != null)
+        rOptions.servername = saved.servername
+      else delete rOptions.servername
+      if (saved.verifyHost !== undefined)
+        rOptions.verifyHost = saved.verifyHost
+      else delete rOptions.verifyHost
+      rOptions.headers = savedHeaders
+      if (savedAgent !== undefined)
+        rOptions.agent = savedAgent
+      else delete rOptions.agent
+    }
+    context.overwall = {
+      serverId,
+      restore: restoreDirect,
+      onSuccess: () => {
+        deathRegistry.markAlive(serverId)
+      },
+      onUpstreamError: (e) => {
+        if (!isConnectFailure(e))
+          return false
+        deathRegistry.markDead(serverId)
+        restoreDirect()
+        return true
+      },
+    }
+  }
   return {
     sslConnectInterceptor: (req, _cltSocket, _head) => {
       const hostname = req.url.split(':')[0]
@@ -229,6 +296,11 @@ function createOverwallMiddleware (overWallConfig) {
       if (!selected) {
         return
       }
+      // 转发目标死亡窗口内：跳过改写，本笔请求走官方默认直连路径（SNI 伪装 + 预设 IP）
+      if (deathRegistry.isDead(serverId)) {
+        log.warn(`OverWall(upgrade): 转发目标 serverId=${serverId} 暂不可达，跳过增强改写走直连: ${hostname}`)
+        return
+      }
 
       const domain = selected.domain
       const port = selected.port
@@ -236,12 +308,13 @@ function createOverwallMiddleware (overWallConfig) {
       const password = selected.password
       const proxyTarget = `${domain}/${path}/${hostname}${rOptions.path}`
 
-      // eslint-disable-next-line node/no-deprecated-api
       const proxy = proxyTarget.indexOf('http:') === 0 || proxyTarget.indexOf('https:') === 0 ? proxyTarget : (`${rOptions.protocol}//${proxyTarget}`)
       const urlObj = URL.parse(proxy)
 
       const { agent: _agent, headers: _headers, ...original } = rOptions
       rOptions.original = original
+      const savedAgent = rOptions.agent
+      const savedHeaders = rOptions.headers ? { ...rOptions.headers } : rOptions.headers
 
       rOptions.protocol = urlObj.protocol
       rOptions.hostname = urlObj.hostname
@@ -269,6 +342,7 @@ function createOverwallMiddleware (overWallConfig) {
       }
 
       log.info('OverWall(upgrade):', hostname, '➜', proxyTarget, `, serverId: ${serverId}`)
+      attachResultHook(context, rOptions, serverId, savedAgent, savedHeaders)
       return true
     },
     requestIntercept (context, req, res, _ssl, _next) {
@@ -287,6 +361,11 @@ function createOverwallMiddleware (overWallConfig) {
       if (!selected) {
         return
       }
+      // 转发目标死亡窗口内：跳过改写，本笔请求走官方默认直连路径（SNI 伪装 + 预设 IP）
+      if (deathRegistry.isDead(serverId)) {
+        log.warn(`OverWall: 转发目标 serverId=${serverId} 暂不可达，跳过增强改写走直连: ${hostname}`)
+        return
+      }
 
       const domain = selected.domain
       const port = selected.port
@@ -302,6 +381,8 @@ function createOverwallMiddleware (overWallConfig) {
       // 备份原始请求参数，不包含 agent 和 headers（agent 是共享单例，headers 在代理转发时会被改写）
       const { agent: _agent, headers: _headers, ...original } = rOptions
       rOptions.original = original
+      const savedAgent = rOptions.agent
+      const savedHeaders = { ...rOptions.headers }
 
       rOptions.protocol = urlObj.protocol
       rOptions.hostname = urlObj.hostname
@@ -333,6 +414,7 @@ function createOverwallMiddleware (overWallConfig) {
       log.info('OverWall:', rOptions.hostname, '➜', proxyTarget, `, serverId: ${serverId}`)
 
       res.setHeader('DS-Overwall', `${target.source}:${serverId}`)
+      attachResultHook(context, rOptions, serverId, savedAgent, savedHeaders)
 
       return true
     },
@@ -343,4 +425,5 @@ module.exports = {
   getTmpPacFilePath,
   downloadPacAsync,
   createOverwallMiddleware,
+  isConnectFailure,
 }

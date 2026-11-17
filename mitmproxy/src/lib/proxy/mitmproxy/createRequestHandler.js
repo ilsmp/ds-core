@@ -382,6 +382,10 @@ module.exports = function createRequestHandler (createIntercepts, middlewares, e
           // 响应已开始后禁止再 destroy 上游（否则会掐断流式响应）
           proxyReq = (rOptions.protocol === 'https:' ? https : http).request(rOptions, (proxyRes) => {
             const cost = Date.now() - start
+            // 增强转发成功：目标存活，清除死亡标记回到官方转发路径
+            if (context.overwall && context.overwall.onSuccess) {
+              context.overwall.onSuccess()
+            }
             if (rOptions.protocol === 'https:') {
               log.info(`代理请求返回: 【${proxyRes.statusCode}】${url}, cost: ${cost} ms`)
             } else {
@@ -605,6 +609,19 @@ module.exports = function createRequestHandler (createIntercepts, middlewares, e
         try {
           proxyRes = await proxyRequestPromise()
         } catch (e) {
+          // 增强转发目标连接类失败：标记目标死亡（此后一段时间跳过改写），
+          // 并把本笔请求恢复成原始直连参数再重试，避免用户在目标故障期间
+          // 完全失去 google/github 等增强域名（官方默认直连路径仍然可用）。
+          if (context.overwall && context.overwall.onUpstreamError && context.overwall.onUpstreamError(e)) {
+            const retryLimitOverwall = (context.retryConfig ? context.retryConfig.times : 1)
+            if (retryCount < retryLimitOverwall) {
+              retryCount++
+              context.retryCount = retryCount
+              res.setHeader('DS-Overwall-Fallback', 'direct')
+              log.warn(`增强转发目标不可达，本笔请求回退直连重试 (${retryCount}/${retryLimitOverwall}): ${url}, error: ${e.code || e.message}`)
+              continue
+            }
+          }
           // 仅当请求体已完整缓冲时才允许重试；否则管道已发出，重试会变空体
           const bodySafe = context.retryBody != null
           const retryLimit = context.retryConfig
