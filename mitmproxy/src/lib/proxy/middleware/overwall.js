@@ -237,6 +237,9 @@ function createOverwallMiddleware (overWallConfig) {
   // onSuccess → 目标存活，清除死亡标记回到官方转发路径；
   // onUpstreamError(e) → 连接类失败时标记死亡并恢复直连参数，返回是否已回退。
   function attachResultHook (context, rOptions, serverId, savedAgent, savedHeaders) {
+    // 本笔请求是否已因转发失败回退直连: 回退后直连的成功不能误清死亡标记,
+    // 否则每笔请求都会再撞一次死目标的连接超时, 退避机制失效。
+    let fellBack = false
     const restoreDirect = () => {
       const saved = rOptions.original
       if (!saved)
@@ -262,12 +265,18 @@ function createOverwallMiddleware (overWallConfig) {
       serverId,
       restore: restoreDirect,
       onSuccess: () => {
+        if (fellBack) {
+          // 直连回退的成功: 探测结果为「目标仍死」, 维持退避
+          deathRegistry.markProbeResult(serverId, false)
+          return
+        }
         deathRegistry.markAlive(serverId)
       },
       onUpstreamError: (e) => {
         if (!isConnectFailure(e))
           return false
         deathRegistry.markDead(serverId)
+        fellBack = true
         restoreDirect()
         return true
       },

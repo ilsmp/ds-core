@@ -16,6 +16,9 @@
 
 const DEAD_MS_BASE = 5 * 1000
 const DEAD_MS_MAX = 60 * 1000
+// 半开探测锁: 窗口到期后只放行一笔请求探测转发目标, 其余并发请求继续走直连。
+// 探测锁时长需覆盖一次连接超时(默认 7s), 避免探测期间后续请求集体撞超时。
+const HALF_OPEN_PROBE_MS = 10 * 1000
 
 // key: serverId（overwall 服务器列表里的 id），value: { deadUntil, failStreak }
 const deadMap = new Map()
@@ -26,8 +29,10 @@ function isDead (serverId) {
     return false
   }
   if (Date.now() >= entry.deadUntil) {
-    // 半开窗口：到期即视为可用，允许一笔请求重新探测转发目标
-    deadMap.delete(serverId)
+    // 半开窗口: 到期放行一笔探测(顺延窗口挡住并发探测风暴),
+    // 记录保留 —— 探测失败时 markDead 继承 failStreak 继续指数退避
+    entry.deadUntil = Date.now() + HALF_OPEN_PROBE_MS
+    entry.halfOpen = true
     return false
   }
   return true
@@ -45,6 +50,27 @@ function markAlive (serverId) {
   deadMap.delete(serverId)
 }
 
+/**
+ * 探测(半开)请求对结果的回调: 探测成功才清死亡标记;
+ * 探测失败继承 failStreak 继续指数退避。
+ * 非探测请求(死亡窗口内的直连回退)不应调用本方法 —— 它们的成功
+ * 不代表转发目标恢复, 直接忽略即可, 死亡窗口照常倒数。
+ */
+function markProbeResult (serverId, ok) {
+  const entry = deadMap.get(serverId)
+  if (!entry || !entry.halfOpen) {
+    // 已被并发探测成功清掉, 或本就不是半开探测请求: 忽略
+    if (ok) markAlive(serverId)
+    return
+  }
+  entry.halfOpen = false
+  if (ok) {
+    markAlive(serverId)
+  } else {
+    markDead(serverId)
+  }
+}
+
 /** 调试/日志用：当前处于死亡状态的目标列表 */
 function snapshot () {
   const now = Date.now()
@@ -55,4 +81,4 @@ function snapshot () {
   return list
 }
 
-module.exports = { isDead, markDead, markAlive, snapshot }
+module.exports = { isDead, markDead, markAlive, markProbeResult, snapshot }
