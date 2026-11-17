@@ -382,6 +382,17 @@ module.exports = function createRequestHandler (createIntercepts, middlewares, e
           // 响应已开始后禁止再 destroy 上游（否则会掐断流式响应）
           proxyReq = (rOptions.protocol === 'https:' ? https : http).request(rOptions, (proxyRes) => {
             const cost = Date.now() - start
+            // 增强转发目标(如本地适配器)返回网关类状态码：目标活着但其上游不可用，
+            // 必须与连接失败同等对待(标记死亡+回退直连重试)，不能当作目标存活
+            if (context.overwall && context.overwall.onUpstreamStatus && context.overwall.onUpstreamStatus(proxyRes.statusCode)) {
+              const e = new Error('OverWall target gateway status ' + proxyRes.statusCode)
+              e.retryable = true
+              proxyRes.on('error', () => {})
+              proxyRes.resume()
+              proxyReq.destroy()
+              reject(e)
+              return
+            }
             // 增强转发成功：目标存活，清除死亡标记回到官方转发路径
             if (context.overwall && context.overwall.onSuccess) {
               context.overwall.onSuccess()

@@ -123,6 +123,10 @@ module.exports = function createUpgradeHandler (serverSetting, externalProxy, dn
       proxyReqRef.on('response', (res) => {
         // 上游没有回 101 而是普通 HTTP 响应：把状态行+响应头透传给客户端，再关闭
         if (!res.upgrade) {
+          // 网关类状态码(适配器活着但其上游不可用)：标记死亡退避，后续升级请求走直连
+          if (overwallHook && typeof overwallHook.onUpstreamStatus === 'function' && overwallHook.onUpstreamStatus(res.statusCode)) {
+            log.warn('upgradeHandler: 转发目标返回 ' + res.statusCode + '，已标记死亡，后续走直连')
+          }
           const lines = [`HTTP/1.1 ${res.statusCode || 502} ${res.statusMessage || 'Bad Gateway'}`]
           for (const key of Object.keys(res.headers)) {
             const value = res.headers[key]

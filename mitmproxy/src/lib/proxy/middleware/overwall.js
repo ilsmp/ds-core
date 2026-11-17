@@ -29,6 +29,10 @@ const CONNECT_FAIL_CODES = new Set([
   'UND_ERR_CONNECT_TIMEOUT',
   'ERR_SOCKET_CONNECTION_TIMEOUT',
 ])
+// 转发目标(本地适配器)返回的「网关类」状态码：目标进程活着，但它的上游(如用户的
+// Clash/VPN)不可用。与连接失败同等对待——标记死亡退避 + 本笔请求回退直连重试，
+// 否则适配器上游挂掉期间增强域名会持续拿到 502，而官方默认直连路径本可以正常访问。
+const GATEWAY_FAIL_STATUS = new Set([502, 503, 504])
 function isConnectFailure (e) {
   if (!e)
     return false
@@ -272,9 +276,26 @@ function createOverwallMiddleware (overWallConfig) {
         }
         deathRegistry.markAlive(serverId)
       },
+      onUpstreamStatus: (statusCode) => {
+        if (!GATEWAY_FAIL_STATUS.has(Number(statusCode)))
+          return false
+        if (fellBack) {
+          // 本笔已回退直连：直连源站自身的网关状态码不是适配器的锅，不能误标死亡
+          return false
+        }
+        log.warn(`OverWall: 转发目标 serverId=${serverId} 返回 ${statusCode}（其上游不可用），标记死亡并回退直连`)
+        deathRegistry.markDead(serverId)
+        fellBack = true
+        restoreDirect()
+        return true
+      },
       onUpstreamError: (e) => {
         if (!isConnectFailure(e))
           return false
+        if (fellBack) {
+          // 本笔已回退直连：直连自身的连接失败不应再次累计到适配器的退避上
+          return false
+        }
         deathRegistry.markDead(serverId)
         fellBack = true
         restoreDirect()
