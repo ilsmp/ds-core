@@ -6,6 +6,7 @@ const request = require('request')
 const log = require('../../../utils/util.log.server')
 const matchUtil = require('../../../utils/util.match')
 const pac = require('./source/pac')
+const ProxyHttpAgent = require('../common/ProxyHttpAgent')
 const { restoreVerifySslAgent } = require('../../interceptor/impl/req/interceptorUtil')
 const dateUtil = require('@blue-frontier/dev-sidecar/src/utils/util.date')
 const { resolvedSnapshot } = require('@blue-frontier/dev-sidecar/src/utils/util.secret-vault')
@@ -195,6 +196,16 @@ function createOverwallMiddleware (overWallConfig) {
   }
 
   const overWallTargetMap = matchUtil.domainMapRegexply(overWallConfig.targets)
+  // http 明文回环适配器专用 agent：原请求的 https agent 被复用时，
+  // Node 会校验 agent 协议与请求协议一致，直接抛 ERR_INVALID_PROTOCOL。
+  // 转发到 http:// 开头的 overwall 服务器（本地明文回环适配器）时必须换用它。
+  let httpLoopbackAgent = null
+  function getHttpLoopbackAgent () {
+    if (httpLoopbackAgent == null) {
+      httpLoopbackAgent = new ProxyHttpAgent()
+    }
+    return httpLoopbackAgent
+  }
   return {
     sslConnectInterceptor: (req, _cltSocket, _head) => {
       const hostname = req.url.split(':')[0]
@@ -253,6 +264,11 @@ function createOverwallMiddleware (overWallConfig) {
       delete rOptions.verifyHost
       // 同理，原域名规则里的 unVerifySsl 也不应作用到新目标上
       restoreVerifySslAgent(rOptions)
+      // 目标协议为 http 时换 http agent（本地回环明文适配器场景）；
+      // restoreVerifySslAgent 只处理 https 系 agent，http 目标必须显式换。
+      if (urlObj.protocol === 'http:') {
+        rOptions.agent = getHttpLoopbackAgent()
+      }
 
       log.info('OverWall:', rOptions.hostname, '➜', proxyTarget, `, serverId: ${serverId}`)
 
