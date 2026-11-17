@@ -211,6 +211,66 @@ function createOverwallMiddleware (overWallConfig) {
       const hostname = req.url.split(':')[0]
       return matchTarget(hostname, overWallTargetMap) != null
     },
+    // WebSocket（upgrade）路径的改写：与 requestIntercept 同一套服务器选择与回环改写，
+    // 升级请求没有 res，因此不写 DS-Overwall 响应头。
+    upgradeIntercept (context) {
+      const { rOptions } = context
+      if (rOptions.protocol === 'http:') {
+        return
+      }
+      const hostname = rOptions.hostname
+      const target = matchTarget(hostname, overWallTargetMap)
+      if (target == null) {
+        return
+      }
+
+      const serverId = target.source === 'config' ? resolveServerId(target.value) : defaultServerId
+      const selected = serverById.get(serverId)
+      if (!selected) {
+        return
+      }
+
+      const domain = selected.domain
+      const port = selected.port
+      const path = selected.path
+      const password = selected.password
+      const proxyTarget = `${domain}/${path}/${hostname}${rOptions.path}`
+
+      // eslint-disable-next-line node/no-deprecated-api
+      const proxy = proxyTarget.indexOf('http:') === 0 || proxyTarget.indexOf('https:') === 0 ? proxyTarget : (`${rOptions.protocol}//${proxyTarget}`)
+      const urlObj = URL.parse(proxy)
+
+      const { agent: _agent, headers: _headers, ...original } = rOptions
+      rOptions.original = original
+
+      rOptions.protocol = urlObj.protocol
+      rOptions.hostname = urlObj.hostname
+      rOptions.host = urlObj.host
+      if (rOptions.headers) {
+        rOptions.headers.host = urlObj.host
+        if (password) {
+          rOptions.headers.dspassword = password
+        }
+      }
+      rOptions.path = urlObj.path
+      if (urlObj.port) {
+        rOptions.port = Number.parseInt(urlObj.port)
+      } else {
+        rOptions.port = port || (rOptions.protocol === 'https:' ? 443 : 80)
+      }
+
+      // 目标是 overwall 服务器：丢弃原域名的 SNI 伪装与证书校验域名，
+      // 并按目标协议换用明文回环 agent（与 requestIntercept 保持一致）。
+      delete rOptions.servername
+      delete rOptions.verifyHost
+      restoreVerifySslAgent(rOptions)
+      if (urlObj.protocol === 'http:') {
+        rOptions.agent = getHttpLoopbackAgent()
+      }
+
+      log.info('OverWall(upgrade):', hostname, '➜', proxyTarget, `, serverId: ${serverId}`)
+      return true
+    },
     requestIntercept (context, req, res, _ssl, _next) {
       const { rOptions, log } = context
       if (rOptions.protocol === 'http:') {
