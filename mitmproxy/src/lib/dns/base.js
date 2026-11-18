@@ -408,6 +408,13 @@ module.exports = class BaseDNS {
           hostnamePreSetIpList = mapToList(hostnamePreSetIpList)
         }
 
+        // 与真实 DNS 解析路径对齐: 本机无 IPv6 时预设列表同样过滤 IPv6,
+        // 避免选中即 EHOSTUNREACH(配置层 null 标记只能抵消已知键, 内核层
+        // 兜住远程配置未来新增的任何 IPv6 预设; 有 IPv6 的机器不受影响)
+        if (ipv6Unavailable) {
+          hostnamePreSetIpList = hostnamePreSetIpList.filter(ip => !isIPv6(ip))
+        }
+
         if (hostnamePreSetIpList.length > 0) {
           hostnamePreSetIpList.isPreSet = true
           log.info(`[DNS-over-PreSet '${this.dnsName}'] 获取到该域名的预设IP列表： ${hostname} - ${JSON.stringify(hostnamePreSetIpList)}`)

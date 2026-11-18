@@ -6,6 +6,7 @@ const config = require('./config.js')
 const matchUtil = require('../../utils/util.match.js')
 const cloudflareRoute = require('../cloudflareRoute')
 const { isZeroIp } = require('../dns/util.ip')
+const { reportIPv6Error } = require('../dns/base')
 const { configFromFiles } = require('@blue-frontier/dev-sidecar/src/config/index.js')
 
 const familyMapping = matchUtil.domainMapRegexply(configFromFiles.server.dns.familyMapping)
@@ -379,6 +380,12 @@ class SpeedTester {
       client.on('error', (e) => {
         isOver = true
         clearTimeout(timeoutId)
+        // IPv6 不可达(本机无 IPv6 或虚拟网卡无路由)计入 IPv6 失败累计:
+        // 达阈后自动禁用 IPv6 解析, 把启动期 IPv6 预设崩溃窗口从「3 个真实
+        // 请求」缩到「3 个启动测速探针」(2026-11-18)
+        if ((e.code === 'EHOSTUNREACH' || e.code === 'ENETUNREACH') && net.isIP(host) === 6) {
+          reportIPv6Error(host)
+        }
 
         log.warn('[speed] test by TCP error:  ', this.hostname, `➜ ${host}:${this.port} from DNS '${dns}', cost: ${Date.now() - startTime} ms, errorMsg:`, e.message)
         reject(e)
