@@ -1,11 +1,74 @@
+const childProcess = require('node:child_process')
+
+// 系统代理守护：第三方软件（如 FlClash 内核的 VPN 模式客户端）退出时会把
+// 系统代理整体关闭，导致 DS 状态显示开启而系统实际已断流。运行期间定期
+// 校验系统代理是否仍指向本进程端口，被翻掉就自动恢复（仅 macOS 实现）。
+const PROXY_GUARD_INTERVAL_MS = 15000
+let proxyGuardTimer = null
+
+function readMacSystemProxyState () {
+  return new Promise((resolve) => {
+    childProcess.exec('scutil --proxy', { timeout: 5000 }, (err, stdout) => {
+      if (err) {
+        resolve(null)
+        return
+      }
+      const portMatch = String(stdout || '').match(/HTTPPort\s*:\s*(\d+)/)
+      const enabledMatch = String(stdout || '').match(/HTTPEnable\s*:\s*(\d+)/)
+      resolve({
+        enabled: enabledMatch ? enabledMatch[1] === '1' : null,
+        port: portMatch ? Number(portMatch[1]) : null,
+      })
+    })
+  })
+}
+
+function startProxyGuard (context, expectedPort) {
+  stopProxyGuard()
+  proxyGuardTimer = setInterval(async () => {
+    try {
+      const state = await readMacSystemProxyState()
+      if (state == null || state.enabled !== false) {
+        return // 读取失败或代理仍开启：不动
+      }
+      if (state.port != null && state.port !== expectedPort) {
+        return // 系统代理指向其他端口（用户切到别的代理软件后关闭），尊重之，不抢
+      }
+      context.log.warn(`检测到系统代理被第三方软件关闭（期望端口 ${expectedPort}），正在自动恢复...`)
+      await context.shell.setSystemProxy({ ip: '127.0.0.1', port: expectedPort, setEnv: false })
+      context.log.info('系统代理已自动恢复')
+      context.event.fire('status', { key: 'proxy.enabled', value: true })
+    } catch (e) {
+      context.log.warn('系统代理守护检查失败:', e.message)
+    }
+  }, PROXY_GUARD_INTERVAL_MS)
+  // unref：守护定时器不阻止进程退出
+  if (proxyGuardTimer.unref) {
+    proxyGuardTimer.unref()
+  }
+  context.log.info(`系统代理守护已启动（每 ${PROXY_GUARD_INTERVAL_MS / 1000}s 校验一次）`)
+}
+
+function stopProxyGuard () {
+  if (proxyGuardTimer != null) {
+    clearInterval(proxyGuardTimer)
+    proxyGuardTimer = null
+  }
+}
+
 const ProxyPlugin = function (context) {
   const { config, event, shell, log } = context
   const api = {
     async start () {
-      return api.setProxy()
+      const ret = await api.setProxy()
+      if (process.platform === 'darwin') {
+        startProxyGuard(context, ret.port)
+      }
+      return ret
     },
 
     async close () {
+      stopProxyGuard()
       return api.unsetProxy()
     },
 
@@ -24,6 +87,13 @@ const ProxyPlugin = function (context) {
       log.info(`开启系统代理成功：${ip}:${port}`)
       event.fire('status', { key: 'proxy.enabled', value: true })
       return { ip, port }
+    },
+
+    async guardStatus () {
+      return {
+        running: proxyGuardTimer != null,
+        intervalMs: PROXY_GUARD_INTERVAL_MS,
+      }
     },
 
     async unsetProxy (setEnv) {
