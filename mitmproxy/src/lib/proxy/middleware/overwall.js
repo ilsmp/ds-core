@@ -46,11 +46,13 @@ function isConnectFailure (e) {
 function matchTarget (hostname, overWallTargetMap) {
   // 匹配配置文件
   const ret1 = matchUtil.matchHostname(overWallTargetMap, hostname, 'matched overwall')
+  // 显式 false（布尔或字符串）= 此域名禁用增强：必须在真值判断之前拦截，
+  // 否则 if(ret1) 会把 false 当「未匹配」继续落到 pac.txt，导致禁用被 pac 覆盖。
+  if (ret1 === false || ret1 === 'false') {
+    log.info(`域名 ${hostname} 的overwall配置为 false，跳过增强功能，即使它在 pac.txt 里`)
+    return null
+  }
   if (ret1) {
-    if (ret1 === false || ret1 === 'false') {
-      log.debug(`域名 ${hostname} 的overwall配置为 false，跳过增强功能，即使它在 pac.txt 里`)
-      return null
-    }
     return { source: 'config', value: ret1 }
   }
 
