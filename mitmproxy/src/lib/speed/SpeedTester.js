@@ -70,12 +70,21 @@ class SpeedTester {
     }
     item._probing = false
     if (success) {
+      // 迟滞恢复: failed 状态的 IP 需连续两次成功(请求级反馈或周期测速)才重新进入
+      // 存活列表, 避免间歇性被阻断的 IP 因单次偶然成功被重新启用, 在阻断窗口内
+      // 继续烧掉请求的建连超时(2026-11-18 githubassets 裸页面问题的根因之一)
+      if (item.status === 'failed' && (item._okStreak = (item._okStreak || 0) + 1) < 2) {
+        log.info(`[speed] 迟滞恢复未达标, 保持 failed: ${this.hostname} ➜ ${item.host} (${item._okStreak}/2)`)
+        return
+      }
+      item._okStreak = 0
       item.status = 'success'
       item.time = item.time || 1
       if (!this.alive.some(i => i.host === host)) {
         this.alive.push(item)
       }
     } else {
+      item._okStreak = 0
       item.status = 'failed'
       // 从存活列表中移除失败 IP，避免后续请求和自动重试继续使用这个已失败的 IP
       this.alive = this.alive.filter(i => i.host !== host)
@@ -327,11 +336,19 @@ class SpeedTester {
   async _doTest (item, aliveList) {
     try {
       const ret = await this.testOne(item)
+      // 迟滞恢复: failed 的 IP 周期测速连续两次成功才真正恢复(与 reportProbeResult 共享计数,
+      // 请求级成功也会累加), 单次测速成功不足以证明间歇性阻断已结束
+      if (item.status === 'failed' && (item._okStreak = (item._okStreak || 0) + 1) < 2) {
+        log.info(`[speed] 周期测速成功但迟滞恢复未达标, 保持 failed: ${this.hostname} ➜ ${item.host} (${item._okStreak}/2)`)
+        return
+      }
+      item._okStreak = 0
       item.title = `${ret.by}测速成功：${ret.target}`
       log.info(`[speed] test success: ${this.hostname} ➜ ${item.host}:${this.port} from DNS '${item.dns}'`)
       _.merge(item, ret)
       aliveList.push({ ...ret, ...item })
     } catch (e) {
+      item._okStreak = 0
       if (item.time == null) {
         item.title = e.message
         item.status = 'failed'
