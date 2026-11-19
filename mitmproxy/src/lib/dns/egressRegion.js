@@ -59,6 +59,11 @@ async function isRestricted (policy, logRef) {
   if (cache.region !== null && now - cache.ts < ttl) {
     return restrictedRegions.includes(cache.region)
   }
+  // 探测全失败后的短缓存: 避免探测源宕机时每个请求都重新探测
+  // (最坏开销封顶为 每60秒 一轮探针超时, 而非每请求)
+  if (cache.region === null && cache.failedTs && now - cache.failedTs < (p.failTtlMs || 60000)) {
+    return p.defaultRestricted !== false
+  }
   if (!cache.inflight) {
     cache.inflight = detect(p).then((region) => {
       cache.inflight = null
@@ -69,6 +74,9 @@ async function isRestricted (policy, logRef) {
     })
   }
   const region = await cache.inflight
+  if (region === null) {
+    cache.failedTs = Date.now()
+  }
   if (region === null) return p.defaultRestricted !== false
   return restrictedRegions.includes(region)
 }
