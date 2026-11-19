@@ -1660,3 +1660,20 @@ const configFromFiles = applyRemoteConfigUrlFix(
 )
 
 module.exports = { defaultConfig, configFromFiles, applyRemoteConfigUrlFix }
+
+// 用户层原始配置快照(未与远程合并): 供「本地优先、远程兜底」的预设选择使用.
+// 用户配置运行期修改需重启生效, 与 configFromFiles 同语义, 模块级缓存安全.
+let _userConfigSnapshot = null
+function getUserConfigFromFiles () {
+  if (_userConfigSnapshot === null) {
+    try {
+      _userConfigSnapshot = configLoader.getUserConfig() || {}
+    } catch {
+      _userConfigSnapshot = {}
+    }
+  }
+  return _userConfigSnapshot
+}
+
+module.exports.getUserConfigFromFiles = getUserConfigFromFiles
+module.exports.getUserBasePath = configLoader.getUserBasePath

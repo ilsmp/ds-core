@@ -7,6 +7,7 @@ const matchUtil = require('../../utils/util.match.js')
 const cloudflareRoute = require('../cloudflareRoute')
 const { isZeroIp } = require('../dns/util.ip')
 const { reportIPv6Error } = require('../dns/base')
+const ipBlacklist = require('./ipBlacklist')
 const { configFromFiles } = require('@blue-frontier/dev-sidecar/src/config/index.js')
 
 const familyMapping = matchUtil.domainMapRegexply(configFromFiles.server.dns.familyMapping)
@@ -81,12 +82,14 @@ class SpeedTester {
       item._okStreak = 0
       item.status = 'success'
       item.time = item.time || 1
+      ipBlacklist.remove(host)
       if (!this.alive.some(i => i.host === host)) {
         this.alive.push(item)
       }
     } else {
       item._okStreak = 0
       item.status = 'failed'
+      ipBlacklist.add(host, 'probe-failed', this.hostname)
       // 从存活列表中移除失败 IP，避免后续请求和自动重试继续使用这个已失败的 IP
       this.alive = this.alive.filter(i => i.host !== host)
     }
@@ -279,6 +282,7 @@ class SpeedTester {
       this.backupList = this.backupList.filter(item => !isZeroIp(item.host))
       await this.testBackups()
       log.info(`[speed] test end: ${this.hostname} ➜ ip-list:`, this.backupList, `, testCount: ${this.testCount}`)
+      await this.recheckBlacklist()
       if (config.notify) {
         config.notify({ key: 'test' })
       }
@@ -289,6 +293,23 @@ class SpeedTester {
       if (this.pendingTest) {
         this.pendingTest = false
         this.test()
+      }
+    }
+  }
+
+  // 黑名单 IP 自动复测: 每测速周期最多探 2 个, 连续两次成功自动解禁;
+  // 配合 7 天过期兜底, 保证「拉黑不永久、恢复自动感知」(2026-11-19)
+  async recheckBlacklist () {
+    let budget = 2
+    for (const ip of ipBlacklist.entriesForHostname(this.hostname)) {
+      if (budget-- <= 0) {
+        break
+      }
+      try {
+        await this.testOne({ host: ip, dns: 'blacklist-recheck' })
+        ipBlacklist.noteRecheck(ip, true)
+      } catch {
+        ipBlacklist.noteRecheck(ip, false)
       }
     }
   }
@@ -345,11 +366,13 @@ class SpeedTester {
       }
       item._okStreak = 0
       item.title = `${ret.by}测速成功：${ret.target}`
+      ipBlacklist.remove(item.host)
       log.info(`[speed] test success: ${this.hostname} ➜ ${item.host}:${this.port} from DNS '${item.dns}'`)
       _.merge(item, ret)
       aliveList.push({ ...ret, ...item })
     } catch (e) {
       item._okStreak = 0
+      ipBlacklist.add(item.host, 'speedtest-failed', this.hostname)
       if (item.time == null) {
         item.title = e.message
         item.status = 'failed'

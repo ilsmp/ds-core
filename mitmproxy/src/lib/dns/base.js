@@ -3,6 +3,7 @@ const log = require('../../utils/util.log.server')
 const matchUtil = require('../../utils/util.match')
 const { isIPv6 } = require('./util.ip')
 const egressRegion = require('./egressRegion')
+const ipBlacklist = require('../speed/ipBlacklist')
 const svcbUtil = require('./util.svcb')
 const { DynamicChoice } = require('../choice/index')
 const os = require('node:os')
@@ -429,6 +430,37 @@ module.exports = class BaseDNS {
         // 兜住远程配置未来新增的任何 IPv6 预设; 有 IPv6 的机器不受影响)
         if (ipv6Unavailable) {
           hostnamePreSetIpList = hostnamePreSetIpList.filter(ip => !isIPv6(ip))
+        }
+
+        // 持久化黑名单: 连接失败的 IP 自动拉黑(含官方远程更新新增的坏 IP),
+        // 周期复测+7天过期自动解禁, 见 speed/ipBlacklist(2026-11-19)
+        hostnamePreSetIpList = hostnamePreSetIpList.filter(ip => !ipBlacklist.isBlacklisted(ip))
+
+        // 本地优先、远程兜底: 用户层对该域名声明过预设时只用用户层健康 IP;
+        // 用户层 IP 全部不健康才放开到合并池(含远程新增 IP)(2026-11-19)
+        if (this.preSetIpUserList && hostnamePreSetIpList.length > 0) {
+          const userDeclared = matchUtil.matchHostname(this.preSetIpUserList, hostname)
+          if (userDeclared) {
+            const userIps = (Array.isArray(userDeclared) ? userDeclared.slice() : mapToList(userDeclared)).filter(ip => hostnamePreSetIpList.includes(ip))
+            let healthy = userIps
+            try {
+              const speedTest = require('../speed')
+              const tester = speedTest.getSpeedTester(hostname, this.port || 443)
+              if (tester && Array.isArray(tester.backupList)) {
+                healthy = userIps.filter((ip) => {
+                  const item = tester.backupList.find(i => i.host === ip)
+                  return !item || item.status !== 'failed'
+                })
+              }
+            } catch {
+              // 健康状态获取失败时按用户层 IP 可用处理
+            }
+            if (healthy.length > 0) {
+              healthy.isPreSet = true
+              return healthy
+            }
+            log.info(`[DNS-over-PreSet '${this.dnsName}'] 用户层预设 IP 均不健康, 回退合并池(含远程新增): ${hostname}`)
+          }
         }
 
         if (hostnamePreSetIpList.length > 0) {

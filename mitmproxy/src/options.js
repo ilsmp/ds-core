@@ -9,6 +9,12 @@ const scriptInterceptor = require('./lib/interceptor/impl/res/script')
 const { getTmpPacFilePath, downloadPacAsync, createOverwallMiddleware } = require('./lib/proxy/middleware/overwall')
 const log = require('./utils/util.log.server')
 const matchUtil = require('./utils/util.match')
+let userConfigSnapshot = {}
+try {
+  userConfigSnapshot = require('@blue-frontier/dev-sidecar/src/config/index.js').getUserConfigFromFiles() || {}
+} catch {
+  // 用户配置不可读时本地优先逻辑自动退化为合并池行为
+}
 
 // 每个域名的路径级拦截器缓存的最大条数。
 // 对于使用 .* 路径模式的域名（如 api.github.com），每个唯一 URL（含不同 query string）都会生成独立的缓存条目。
@@ -164,6 +170,8 @@ module.exports = (serverConfig) => {
         // 地域自适应预设: 受限地域时地域敏感家族使用中继池, 否则落回官方预设
         preSetIpRelayList: matchUtil.domainMapRegexply(serverConfig.preSetIpListRelay || {}),
         regionPolicy: serverConfig.regionPolicy || null,
+        // 用户层原始预设(未合并): 供「本地优先、远程兜底」选择逻辑使用
+        preSetIpUserList: matchUtil.domainMapRegexply((userConfigSnapshot.server && userConfigSnapshot.server.preSetIpList) || {}),
       }),
       mapping: matchUtil.domainMapRegexply(dnsMapping),
       speedTest: serverConfig.dns.speedTest,

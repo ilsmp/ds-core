@@ -136,6 +136,7 @@ module.exports = {
       for (const d of Object.values(dnsMap)) {
         d.preSetIpRelayList = options.preSetIpRelayList || null
         d.regionPolicy = options.regionPolicy || null
+        d.preSetIpUserList = options.preSetIpUserList || null
       }
     }
 
