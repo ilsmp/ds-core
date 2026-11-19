@@ -161,6 +161,9 @@ module.exports = (serverConfig) => {
       dnsMap: dnsUtil.initDNS(serverConfig.dns.providers, preSetIpList, {
         ech: echConfig,
         nat64: { ...nat64Config, enabled: isNat64Enabled },
+        // 地域自适应预设: 受限地域时地域敏感家族使用中继池, 否则落回官方预设
+        preSetIpRelayList: matchUtil.domainMapRegexply(serverConfig.preSetIpListRelay || {}),
+        regionPolicy: serverConfig.regionPolicy || null,
       }),
       mapping: matchUtil.domainMapRegexply(dnsMapping),
       speedTest: serverConfig.dns.speedTest,

@@ -131,6 +131,14 @@ module.exports = {
 
     log.info(`设置SNI默认使用的DNS为 '${dnsMap.ForSNI.dnsName}'（注：当某个域名配置了SNI但未配置DNS时，将默认使用该DNS）`)
 
+    // 地域自适应预设: 中继池与地域策略下发到每个 DNS 实例
+    if (options.preSetIpRelayList || options.regionPolicy) {
+      for (const d of Object.values(dnsMap)) {
+        d.preSetIpRelayList = options.preSetIpRelayList || null
+        d.regionPolicy = options.regionPolicy || null
+      }
+    }
+
     return dnsMap
   },
   /**

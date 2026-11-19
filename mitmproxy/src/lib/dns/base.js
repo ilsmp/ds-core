@@ -2,6 +2,7 @@ const { LRUCache } = require('lru-cache')
 const log = require('../../utils/util.log.server')
 const matchUtil = require('../../utils/util.match')
 const { isIPv6 } = require('./util.ip')
+const egressRegion = require('./egressRegion')
 const svcbUtil = require('./util.svcb')
 const { DynamicChoice } = require('../choice/index')
 const os = require('node:os')
@@ -399,6 +400,21 @@ module.exports = class BaseDNS {
   async _lookupWithPreSetIpList (hostname, options = {}) {
     // ECH域名强制忽略预设IP：预设IP往往是域名自身的源站IP，不支持ECH，会导致ECH握手失败
     if (this.preSetIpList && options.ignorePreSetIpList !== true) {
+      // 地域自适应预设(2026-11-19): 直连出口处于受限地域时, 地域敏感家族改用
+      // 中继池 preSetIpRelayList(白名单语义, 不受远程新增影响); 非受限地域
+      // 落回官方/远程预设直连, 不一刀切绕道中继。
+      if (this.preSetIpRelayList) {
+        const relay = matchUtil.matchHostname(this.preSetIpRelayList, hostname, `matched preSetIpListRelay(${this.dnsName})`)
+        if (relay && await egressRegion.isRestricted(this.regionPolicy, log)) {
+          const relayList = Array.isArray(relay) ? relay.slice() : mapToList(relay)
+          if (relayList.length > 0) {
+            relayList.isPreSet = true
+            log.info(`[DNS-over-PreSet '${this.dnsName}'] 受限地域, 使用中继预设池: ${hostname} - ${JSON.stringify(relayList)}`)
+            return relayList
+          }
+        }
+      }
+
       // 获取当前域名的预设IP列表
       let hostnamePreSetIpList = matchUtil.matchHostname(this.preSetIpList, hostname, `matched preSetIpList(${this.dnsName})`)
       if (hostnamePreSetIpList && (hostnamePreSetIpList.length > 0 || hostnamePreSetIpList.length === undefined)) {
