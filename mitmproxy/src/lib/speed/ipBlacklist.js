@@ -51,6 +51,18 @@ module.exports = {
     }
     return true
   },
+  // 拉黑起始时间戳（未拉黑或已过期返回 null）：供中继守卫的宽限期判断使用，
+  // 避免单次抖动就把地域敏感家族翻到适配器出口（见 middleware/relayGuard）
+  getSince (ip) {
+    const e = load()[ip]
+    if (!e) return null
+    if (Date.now() - e.ts > EXPIRE_MS) {
+      delete load()[ip]
+      save()
+      return null
+    }
+    return e.ts
+  },
   add (ip, reason, hostname) {
     if (!ip) return
     const d = load()

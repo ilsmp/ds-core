@@ -7,6 +7,7 @@ const echDomainUtil = require('./lib/proxy/common/ech/domain')
 const interceptorImpls = require('./lib/interceptor')
 const scriptInterceptor = require('./lib/interceptor/impl/res/script')
 const { getTmpPacFilePath, downloadPacAsync, createOverwallMiddleware } = require('./lib/proxy/middleware/overwall')
+const { createRelayGuard } = require('./lib/proxy/middleware/relayGuard')
 const log = require('./utils/util.log.server')
 const matchUtil = require('./utils/util.match')
 let userConfigSnapshot = {}
@@ -121,6 +122,9 @@ module.exports = (serverConfig) => {
   const middlewares = []
 
   const preSetIpList = matchUtil.domainMapRegexply(serverConfig.preSetIpList)
+  // 地域自适应预设的中继白名单：DNS 层与增强判定共用同一份编译结果
+  const preSetIpRelayList = matchUtil.domainMapRegexply(serverConfig.preSetIpListRelay || {})
+  const hasRelayList = Object.keys(serverConfig.preSetIpListRelay || {}).length > 0
 
   // ECH配置（RFC 9848）：通过DNS的HTTPS(65)记录获取 ech 参数，用于上游TLS握手
   const dnsEchConfig = serverConfig.dns.ech || {}
@@ -153,7 +157,11 @@ module.exports = (serverConfig) => {
 
   // 增强功能插件：如果启用了，则添加到插件列表中
   // 注：ECH域名不会进入增强模式的反代路径（由 checkEchDomain 判断），必须直连才能使用ECH
-  const overwallMiddleware = createOverwallMiddleware(overWallConfig, { checkEchDomain })
+  // 中继守卫：中继白名单家族（如 google 系）优先走预设中继直连，pac.txt 命中也不转发到
+  // 适配器；中继 IP 持续不可用（超宽限期）时放行增强做兜底，复测恢复后自动回到中继。
+  // targets 里的显式配置优先级高于守卫，使用者仍可为任一域名单独开关增强（2026-11-19）。
+  const relayGuard = createRelayGuard(hasRelayList ? preSetIpRelayList : null)
+  const overwallMiddleware = createOverwallMiddleware(overWallConfig, { checkEchDomain, relayGuard })
   if (overwallMiddleware) {
     middlewares.push(overwallMiddleware)
   }
@@ -168,7 +176,7 @@ module.exports = (serverConfig) => {
         ech: echConfig,
         nat64: { ...nat64Config, enabled: isNat64Enabled },
         // 地域自适应预设: 受限地域时地域敏感家族使用中继池, 否则落回官方预设
-        preSetIpRelayList: matchUtil.domainMapRegexply(serverConfig.preSetIpListRelay || {}),
+        preSetIpRelayList,
         regionPolicy: serverConfig.regionPolicy || null,
         // 用户层原始预设(未合并): 供「本地优先、远程兜底」选择逻辑使用
         preSetIpUserList: matchUtil.domainMapRegexply((userConfigSnapshot.server && userConfigSnapshot.server.preSetIpList) || {}),

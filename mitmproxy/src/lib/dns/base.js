@@ -407,12 +407,20 @@ module.exports = class BaseDNS {
       if (this.preSetIpRelayList) {
         const relay = matchUtil.matchHostname(this.preSetIpRelayList, hostname, `matched preSetIpListRelay(${this.dnsName})`)
         if (relay && await egressRegion.isRestricted(this.regionPolicy, log)) {
-          const relayList = Array.isArray(relay) ? relay.slice() : mapToList(relay)
+          let relayList = Array.isArray(relay) ? relay.slice() : mapToList(relay)
+          // 与常规预设路径同样过滤 IPv6（本机无 IPv6 能力时）与持久化黑名单：中继 IP
+          // 故障时不再反复烧建连超时，先落回官方预设直连；若中继持续不可用，增强层的
+          // 中继守卫会在宽限期后放行适配器兜底（见 lib/proxy/middleware/relayGuard.js）
+          if (ipv6Unavailable) {
+            relayList = relayList.filter(ip => !isIPv6(ip))
+          }
+          relayList = relayList.filter(ip => !ipBlacklist.isBlacklisted(ip))
           if (relayList.length > 0) {
             relayList.isPreSet = true
             log.info(`[DNS-over-PreSet '${this.dnsName}'] 受限地域, 使用中继预设池: ${hostname} - ${JSON.stringify(relayList)}`)
             return relayList
           }
+          log.warn(`[DNS-over-PreSet '${this.dnsName}'] 受限地域, 但中继预设池无可用 IP(黑名单/IPv6 过滤后为空), 落回常规预设: ${hostname}`)
         }
       }
 

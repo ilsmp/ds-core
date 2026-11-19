@@ -12,8 +12,6 @@ const { restoreVerifySslAgent } = require('../../interceptor/impl/req/intercepto
 const dateUtil = require('@blue-frontier/dev-sidecar/src/utils/util.date')
 const { resolvedSnapshot } = require('@blue-frontier/dev-sidecar/src/utils/util.secret-vault')
 
-let pacClient = null
-
 // 视为「转发目标连不上」的错误：只有这类错误才触发死亡标记 + 直连回退；
 // HTTP 4xx/5xx 说明目标活着（拒绝服务≠服务死了），不降级。
 const CONNECT_FAIL_CODES = new Set([
@@ -43,7 +41,14 @@ function isConnectFailure (e) {
   return false
 }
 
-function matchTarget (hostname, overWallTargetMap) {
+// 判定域名是否走增强转发。优先级（高 → 低）：
+//   1) targets 显式 false => 禁用增强（即使 pac.txt 命中）
+//   2) targets 显式真值   => 走增强（使用者意图最高，中继守卫不覆盖）
+//   3) 中继守卫命中       => 跳过增强，走「预设中继直连」路径
+//   4) pac.txt 命中       => 走增强
+// opts: { relayGuard?: hostname => boolean, findProxyForURL?: (url, host) => string }
+function matchTarget (hostname, overWallTargetMap, opts = {}) {
+  const { relayGuard = null, findProxyForURL = null } = opts
   // 匹配配置文件
   const ret1 = matchUtil.matchHostname(overWallTargetMap, hostname, 'matched overwall')
   // 显式 false（布尔或字符串）= 此域名禁用增强：必须在真值判断之前拦截，
@@ -56,11 +61,21 @@ function matchTarget (hostname, overWallTargetMap) {
     return { source: 'config', value: ret1 }
   }
 
-  // 匹配 pac.txt
-  if (pacClient == null) {
+  // 中继守卫：地域敏感家族（server.preSetIpListRelay 白名单，如 google 系）必须走预设
+  // 中继直连路径。这些域名同时存在于 gfwlist(pac.txt) 里，若不在此拦截，会被 pac 判为
+  // 增强域名并转发到本地适配器及其上游 VPN，出口地域随 VPN 节点漂移；实测漂到 CN 时
+  // google AI 模式报「您的设备或账号目前无法使用 AI 模式」，并且只在适配器死亡退避
+  // 窗口内才恢复正常，表现为难以定位的间歇性故障(2026-11-19)。
+  if (relayGuard && relayGuard(hostname)) {
+    log.info(`域名 ${hostname} 命中中继预设白名单，跳过增强功能（pac.txt 命中也不转发），走预设中继直连`)
     return null
   }
-  const ret = pacClient.FindProxyForURL(`https://${hostname}`, hostname)
+
+  // 匹配 pac.txt
+  if (findProxyForURL == null) {
+    return null
+  }
+  const ret = findProxyForURL(`https://${hostname}`, hostname)
   if (ret && ret.indexOf('PROXY ') === 0) {
     log.info(`matchHostname: matched overwall: '${hostname}' -> '${ret}' in pac.txt`)
     return { source: 'pac' }
@@ -199,13 +214,20 @@ function buildServerList (overWallConfig) {
   return list
 }
 
-function createOverwallMiddleware (overWallConfig) {
+function createOverwallMiddleware (overWallConfig, opts = {}) {
   if (!overWallConfig || overWallConfig.enabled !== true) {
     return null
   }
+  // pac 客户端为实例内局部状态：模块级变量会让「本次未启用 pac」的实例继续沿用上一次
+  // 实例创建的 pacClient，导致增强判定与当前配置不一致。
+  let localPacClient = null
   if (overWallConfig.pac && overWallConfig.pac.enabled) {
     // 初始化pac
-    pacClient = pac.createPacClient(overWallConfig.pac.pacFileAbsolutePath)
+    localPacClient = pac.createPacClient(overWallConfig.pac.pacFileAbsolutePath)
+  }
+  const matchOpts = {
+    relayGuard: typeof opts.relayGuard === 'function' ? opts.relayGuard : null,
+    findProxyForURL: localPacClient ? localPacClient.FindProxyForURL.bind(localPacClient) : null,
   }
 
   const serverList = buildServerList(overWallConfig)
@@ -308,7 +330,7 @@ function createOverwallMiddleware (overWallConfig) {
   return {
     sslConnectInterceptor: (req, _cltSocket, _head) => {
       const hostname = req.url.split(':')[0]
-      return matchTarget(hostname, overWallTargetMap) != null
+      return matchTarget(hostname, overWallTargetMap, matchOpts) != null
     },
     // WebSocket（upgrade）路径的改写：与 requestIntercept 同一套服务器选择与回环改写，
     // 升级请求没有 res，因此不写 DS-Overwall 响应头。
@@ -318,7 +340,7 @@ function createOverwallMiddleware (overWallConfig) {
         return
       }
       const hostname = rOptions.hostname
-      const target = matchTarget(hostname, overWallTargetMap)
+      const target = matchTarget(hostname, overWallTargetMap, matchOpts)
       if (target == null) {
         return
       }
@@ -383,7 +405,7 @@ function createOverwallMiddleware (overWallConfig) {
         return
       }
       const hostname = rOptions.hostname
-      const target = matchTarget(hostname, overWallTargetMap)
+      const target = matchTarget(hostname, overWallTargetMap, matchOpts)
       if (target == null) {
         return
       }
@@ -458,4 +480,6 @@ module.exports = {
   downloadPacAsync,
   createOverwallMiddleware,
   isConnectFailure,
+  // 供回归门禁单测使用：增强判定优先级（显式 false / 显式真值 / 中继守卫 / pac）
+  _matchTarget: matchTarget,
 }
